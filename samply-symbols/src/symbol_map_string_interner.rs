@@ -13,6 +13,8 @@ pub struct SymbolMapStringInterner<'a> {
     index_for_borrowed_string: HashMap<&'a str, u32>,
     owned_strings: Vec<String>,
     index_for_owned_string: HashMap<String, u32>,
+    /// Mangled name -> index of its interned demangled name.
+    index_for_mangled_name: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,6 +85,7 @@ impl<'a> SymbolMapStringInterner<'a> {
             index_for_borrowed_string: Default::default(),
             owned_strings: Default::default(),
             index_for_owned_string: Default::default(),
+            index_for_mangled_name: Default::default(),
         }
     }
 
@@ -116,6 +119,18 @@ impl<'a> SymbolMapStringInterner<'a> {
         self.borrowed_strings.push(s);
         self.index_for_borrowed_string.insert(s, index);
         (index) << 1
+    }
+
+    /// Interns the demangled form of `mangled`, demangling each distinct
+    /// name only once.
+    pub fn intern_demangled(&mut self, mangled: &str) -> SymbolMapStringHandle {
+        if let Some(index) = self.index_for_mangled_name.get(mangled) {
+            return self.handle(*index);
+        }
+        let index = self.intern_owned_inner(&crate::demangle::demangle_any(mangled));
+        self.index_for_mangled_name
+            .insert(mangled.to_string(), index);
+        self.handle(index)
     }
 
     pub fn intern_owned(&mut self, s: &str) -> SymbolMapStringHandle {

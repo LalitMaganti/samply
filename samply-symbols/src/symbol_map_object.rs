@@ -23,10 +23,10 @@ use crate::symbol_map::{
     GetInnerSymbolMap, GetInnerSymbolMapWithLookupFramesExt, SymbolMapTrait,
     SymbolMapTraitWithExternalFileSupport,
 };
+use crate::symbol_map_string_interner::SymbolMapStringHandle;
 use crate::{
-    demangle, Error, ExternalFileSymbolMap, FileContents, FrameDebugInfo, FunctionNameHandle,
-    SourceFilePath, SourceFilePathHandle, SymbolMapStringInterner, SymbolNameHandle,
-    SyncAddressInfo,
+    Error, ExternalFileSymbolMap, FileContents, FrameDebugInfo, FunctionNameHandle, SourceFilePath,
+    SourceFilePathHandle, SymbolMapStringInterner, SymbolNameHandle, SyncAddressInfo,
 };
 
 enum FullSymbolListEntry {
@@ -595,7 +595,7 @@ pub struct ObjectSymbolMapInner<'a, Symbol, FC: FileContents + 'static, DDM> {
 /// abstract DIEs do still carry linkage names.
 fn prefer_symbol_name_for_outer_frame<'a>(
     frames: &mut [FrameDebugInfo],
-    symbol_name: &str,
+    symbol_name: SymbolMapStringHandle,
     string_interner: &mut SymbolMapStringInterner<'a>,
 ) {
     // addr2line yields the innermost (most deeply inlined) frame first, so the
@@ -603,15 +603,21 @@ fn prefer_symbol_name_for_outer_frame<'a>(
     let Some(outer_frame) = frames.last_mut() else {
         return;
     };
-    if let Some(dwarf_name) = outer_frame
-        .function
-        .and_then(|handle| string_interner.resolve(handle.into()))
-    {
-        if !is_more_qualified_spelling(symbol_name, &dwarf_name) {
+    if let Some(dwarf_handle) = outer_frame.function {
+        let dwarf_handle: SymbolMapStringHandle = dwarf_handle.into();
+        if dwarf_handle == symbol_name {
             return;
         }
+        if let (Some(symbol_name), Some(dwarf_name)) = (
+            string_interner.resolve(symbol_name),
+            string_interner.resolve(dwarf_handle),
+        ) {
+            if !is_more_qualified_spelling(&symbol_name, &dwarf_name) {
+                return;
+            }
+        }
     }
-    outer_frame.function = Some(string_interner.intern_owned(symbol_name).into());
+    outer_frame.function = Some(symbol_name.into());
 }
 
 /// Whether `symbol_name` is the same name as `dwarf_name`, just spelled out more
@@ -643,10 +649,14 @@ where
 {
     /// The demangled name of the symbol containing `svma`, for use with
     /// [`prefer_symbol_name_for_outer_frame`].
-    fn demangled_symbol_name_for_svma(&self, svma: u64) -> Option<String> {
+    fn demangled_symbol_name_for_svma(
+        &self,
+        svma: u64,
+        string_interner: &mut SymbolMapStringInterner<'a>,
+    ) -> Option<SymbolMapStringHandle> {
         let relative_address = u32::try_from(svma.checked_sub(self.image_base_address)?).ok()?;
         let (_start_addr, _end_addr, name) = self.list.lookup_relative_address(relative_address)?;
-        Some(demangle::demangle_any(&name))
+        Some(string_interner.intern_demangled(&name))
     }
 
     fn frames_lookup_for_object_map_references(&self, svma: u64) -> Option<FramesLookupResult> {
@@ -696,7 +706,7 @@ where
                 let outer_frame_name = match &external.address_in_file {
                     ExternalFileAddressInFileRef::MachoOsoObject { symbol_name, .. }
                     | ExternalFileAddressInFileRef::MachoOsoArchive { symbol_name, .. } => Some(
-                        demangle::demangle_any(&String::from_utf8_lossy(symbol_name)),
+                        string_interner.intern_demangled(&String::from_utf8_lossy(symbol_name)),
                     ),
                     ExternalFileAddressInFileRef::ElfDwo { .. } => None,
                 };
@@ -704,7 +714,7 @@ where
                     |frames: Vec<FrameDebugInfo>,
                      string_interner: &mut SymbolMapStringInterner<'a>| {
                         let mut frames = frames;
-                        if let Some(name) = &outer_frame_name {
+                        if let Some(name) = outer_frame_name {
                             prefer_symbol_name_for_outer_frame(&mut frames, name, string_interner);
                         }
                         FramesLookupResult::Available(frames)
@@ -779,9 +789,10 @@ where
                             continue;
                         }
                         LookupResult::Output(Ok(frame_iter)) => {
-                            let outer_frame_name = self.demangled_symbol_name_for_svma(*svma);
+                            let outer_frame_name =
+                                self.demangled_symbol_name_for_svma(*svma, &mut string_interner);
                             convert_frames(frame_iter, &mut string_interner).map(|mut frames| {
-                                if let Some(name) = &outer_frame_name {
+                                if let Some(name) = outer_frame_name {
                                     prefer_symbol_name_for_outer_frame(
                                         &mut frames,
                                         name,
@@ -843,11 +854,9 @@ where
         };
         let (start_addr, end_addr, name) = self.list.lookup_relative_address(relative_address)?;
         let function_size = end_addr - start_addr;
-        let name = demangle::demangle_any(&name);
-
         let name_handle = {
             let mut string_interner = self.string_interner.lock().unwrap();
-            string_interner.intern_owned(&name)
+            string_interner.intern_demangled(&name)
         };
 
         let symbol = SymbolInfo {
@@ -882,7 +891,7 @@ where
                         convert_frames(frame_iter, &mut string_interner).map(|mut frames| {
                             prefer_symbol_name_for_outer_frame(
                                 &mut frames,
-                                &name,
+                                name_handle,
                                 &mut string_interner,
                             );
                             FramesLookupResult::Available(frames)

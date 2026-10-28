@@ -7,7 +7,7 @@ use gimli::{DwarfPackage, EndianSlice, Reader, RunTimeEndian, SectionId};
 use object::read::ReadRef;
 use object::CompressionFormat;
 
-use crate::{demangle, Error, FrameDebugInfo, SymbolMapStringInterner};
+use crate::{Error, FrameDebugInfo, SymbolMapStringInterner};
 
 pub fn get_frames<R: Reader>(
     address: u64,
@@ -42,8 +42,7 @@ pub fn convert_stack_frame<R: gimli::Reader>(
     let function = match frame.function {
         Some(function_name) => {
             if let Ok(name) = function_name.raw_name() {
-                let name = demangle::demangle_any(&name);
-                Some(string_interner.intern_owned(&name).into())
+                Some(string_interner.intern_demangled(&name).into())
             } else {
                 None
             }
