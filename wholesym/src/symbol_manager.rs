@@ -23,6 +23,16 @@ use crate::SymbolManagerObserver;
 #[derive(Debug, Clone)]
 pub struct SymbolFileOrigin(WholesymFileLocation);
 
+impl SymbolFileOrigin {
+    /// The path of the symbol file, if it's a local file.
+    pub fn local_path(&self) -> Option<&std::path::Path> {
+        match &self.0 {
+            WholesymFileLocation::LocalFile(path) => Some(path),
+            _ => None,
+        }
+    }
+}
+
 /// Contains the symbols for a binary, and allows querying them by address and iterating over them.
 ///
 /// Symbols can be looked up by three types of addresses:
